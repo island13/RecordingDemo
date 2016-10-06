@@ -10,85 +10,125 @@ import Foundation
 import UIKit
 import AVFoundation
 
-class AudioEngineViewController: UIViewController {
-    
-    private var audioEngine: AVAudioEngine!
+class AudioEngineViewController: UIViewController, AVAudioPlayerDelegate {
+
+    private var audioEngine = AVAudioEngine()
     private var file: AVAudioFile?
-    private var player: AVPlayer?
-    
+    private var player: AVAudioPlayer?
+    private let filename = "recording.caf"
+    private var sampleRate: Double!
+    private var channelCount: Int!
+
     @IBOutlet weak var button: UIButton!
-    
+
     @IBAction func buttonTapped(_ sender: UIButton) {
-        if let audioEngine = audioEngine, let inputNode = audioEngine.inputNode {
-            inputNode.removeTap(onBus: 0)
-            audioEngine.stop()
-            self.audioEngine = nil
-            button.setTitle("Record", for: .normal)
-            return
-        }
-        
-        try! AVAudioSession.sharedInstance().setPreferredSampleRate(48_000)
-        try! AVAudioSession.sharedInstance().setActive(true)
-        try! AVAudioSession.sharedInstance().setPreferredSampleRate(48_000)
-        
-        audioEngine = AVAudioEngine()
-        if let inputNode = audioEngine?.inputNode {
-            inputNode.volume = 1
-            audioEngine.mainMixerNode.volume = 1
-            audioEngine.mainMixerNode.outputVolume = 1
-            audioEngine.connect(inputNode, to: audioEngine.mainMixerNode,
-                                format: inputNode.inputFormat(forBus: 0))
-            
-            
-            let settings = [
-                AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-            ]
-            
-            let audioFilename = getDocumentsDirectory().appendingPathComponent("recording.caf")
-            print("\(audioFilename)")
-            file = try! AVAudioFile(forWriting: audioFilename, settings: settings)
-            
-            let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false)
-            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputNode.inputFormat(forBus: 0)) { buffer, time in
+        do {
+            if audioEngine.isRunning {
+                audioEngine.inputNode?.removeTap(onBus: 0)
+                audioEngine.stop()
+                button.setTitle("Record", for: .normal)
+                return
+            }
+            setupAudioSession()
 
-                do {
-                    try self.file!.write(from: buffer)
-                    print("tap")
-                    
-                } catch _ {
-                    assertionFailure()
+            assert(audioEngine.inputNode != nil)
+            if let inputNode = audioEngine.inputNode {
+                let format = inputNode.inputFormat(forBus: 0)
+
+                audioEngine.connect(inputNode, to: audioEngine.mainMixerNode, format: format)
+                audioEngine.mainMixerNode.outputVolume = 0
+
+                audioEngine.prepare()
+                print("Audio engine: \(audioEngine)")
+
+
+                let settings: [String : Int] = [
+                    AVFormatIDKey: Int(kAudioFormatLinearPCM),
+                    AVSampleRateKey: Int(sampleRate),
+                    AVNumberOfChannelsKey: channelCount,
+                    AVEncoderAudioQualityKey: AVAudioQuality.max.rawValue
+                ]
+                print("Settings \(settings)")
+                let audioUrl = getDocumentsDirectory().appendingPathComponent(filename)
+                print("\(audioUrl)")
+                file = try AVAudioFile(forWriting: audioUrl, settings: settings)
+
+                inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { buffer, time in
+
+                    do {
+                        try self.file!.write(from: buffer)
+                        print("\(buffer.format.sampleRate)")
+
+                    } catch _ {
+                        assertionFailure()
+                    }
+
                 }
-                
-            }
-            audioEngine.prepare()
-            do {
                 try audioEngine.start()
-
-            } catch _ {
-                assertionFailure()
+                button.setTitle("Stop", for: .normal)
             }
-            button.setTitle("Stop", for: .normal)
+
+        } catch _ {
+            assertionFailure()
         }
     }
-    
-    
-    @IBAction func play(_ sender: UIButton) {
-        let audioFilename = getDocumentsDirectory().appendingPathComponent("recording.m4a")
 
-        player = AVPlayer(url: audioFilename)
-        
-//        assert(player!.status == .readyToPlay)
+
+    @IBAction func play(_ sender: UIButton) {
+        let audioUrl = getDocumentsDirectory().appendingPathComponent(filename)
+
+        player = try! AVAudioPlayer(contentsOf: audioUrl)
+        player!.delegate = self
+        player?.volume = 1
+
         player!.play()
     }
-    
-    func getDocumentsDirectory() -> URL {
+
+    private func getDocumentsDirectory() -> URL {
         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         let documentsDirectory = paths[0]
         return documentsDirectory
     }
-    
-    
+
+    private func setupAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        do {
+            try audioSession.setCategory(AVAudioSessionCategoryMultiRoute)
+            try audioSession.setActive(true)
+            sampleRate = audioSession.sampleRate
+            channelCount = audioSession.inputNumberOfChannels
+
+            if let availableInputs = audioSession.availableInputs {
+                for input in availableInputs {
+                    if input.portType == AVAudioSessionPortBuiltInMic {
+                        try audioSession.setPreferredInput(input)
+                    }
+
+                }
+            }
+
+            print("audio session \(audioSession.availableInputs)")
+
+            if let input = audioSession.currentRoute.inputs.first, let dataSources = input.dataSources,
+                input.portType == AVAudioSessionPortBuiltInMic {
+
+                for dataSource in dataSources {
+                    if let orientation = dataSource.orientation, orientation == AVAudioSessionOrientationBottom {
+                        try audioSession.setInputDataSource(dataSource)
+                        print("Selected bottom microphone")
+                        break
+                    }
+                }
+            }
+
+
+        } catch _ {
+            assertionFailure()
+        }
+
+        print("Current route \(audioSession.currentRoute)")
+
+    }
+
 }
